@@ -6,24 +6,24 @@ import (
 	sparse "github.com/nnikolash/go-sparse"
 )
 
+// Save cache to persistent storage
+type SaveCacheFunc[Data any, Key any] func(key Key, state *CacheState[Data], updated []*CacheFetchResult[Data]) error
+
+// Load cache from persistent storage
+type LoadCaheFunc[Data any, Key any] func(key Key) (*MemoryCacheState[Data], error)
+
 type MemoryCacheOptions[Data any, Key any] struct {
-	KeyToStr             func(Key) string
-	GetTimestamp         func(d *Data) time.Time
-	GetFromSource        CacheSource[Data, Key]
-	Load                 func(key Key) (*MemoryCacheState[Data], error)
-	Save                 func(key Key, state *CacheState[Data], updated []*CacheFetchResult[Data]) error
-	SkipDataVerification bool
+	GetTimestamp         func(d *Data) time.Time  // (Required)
+	GetFromSource        CacheSource[Data, Key]   // (Required) Fetch data from source
+	KeyToStr             func(Key) string         // (Optional)
+	Save                 SaveCacheFunc[Data, Key] // (Optional) Save to persistent storage
+	Load                 LoadCaheFunc[Data, Key]  // (Optional) Load from persistent storage
+	SkipDataVerification bool                     // (Optional) Set this to true if you are sure your data is well-ordered
 }
 
 type MemoryCacheState[Data any] struct {
 	Entries []*CacheFetchResult[Data]
 }
-
-// TODO: last element of each period may be incomplete.
-// E.g, first we fetched candles [2024-01-01; 2024-02-01], then - [2024-03-01; 2024-04-01].
-// Candle at 2024-02-01 will be incomplete because it was most likely updated after that date.
-// And we still will return that incomplete value if period [2024-01-01; 2024-02-01] requested.
-// But this is very minor difference, so I decided for now to ignore it.
 
 func NewMemoryCache[Data any, Key any](opts MemoryCacheOptions[Data, Key]) *MemoryCache[Data, Key] {
 	return &MemoryCache[Data, Key]{

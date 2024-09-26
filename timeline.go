@@ -79,16 +79,31 @@ type CacheBase[Data any, Key any] struct {
 
 var _ Cache[struct{}, int64] = &CacheBase[struct{}, int64]{}
 
+// Retrieve data for specified period.
+// If data is not found in cache, it will be loaded from source.
+// Parameter extra is passed to GetFromSource function.
 func (c *CacheBase[Data, Key]) Get(key Key, periodStart, periodEnd time.Time, extra interface{}) ([]Data, error) {
 	res, _, err := c.get(key, periodStart, periodEnd, time.Time{}, time.Time{}, true, extra)
 	return res.Data, err
 }
 
+// Retrieve data from cache for specified period without loading it from source.
+//
+// The error may be returned due to failure of loading data from persistent storage.
+// If Load function is not configured, then error is never returned.
+// Error is never returned due to loading from source, because it never happens.
 func (c *CacheBase[Data, Key]) GetCached(key Key, periodStart, periodEnd time.Time) ([]Data, bool, error) {
 	res, isCached, err := c.get(key, periodStart, periodEnd, time.Time{}, time.Time{}, false, nil)
 	return res.Data, isCached, err
 }
 
+// Retrieve data on the longest possible period, containing requested period.
+// Period [requiredPeriodStart, requiredPeriodEnd] is required to be in the result.
+// Period [minPeriodStart, maxPeriodEnd] is desired to be in the result, but not required. No entries will be returned outside of this period.
+//
+// The error may be returned due to failure of loading data from persistent storage.
+// If Load function is not configured, then error is never returned.
+// Error is never returned due to loading from source, because it never happens.
 func (c *CacheBase[Data, Key]) GetCachedAll(key Key, requiredPeriodStart, requiredPeriodEnd, minPeriodStart, maxPeriodEnd time.Time) (CacheFetchResult[Data], bool, error) {
 	if requiredPeriodStart.IsZero() {
 		return CacheFetchResult[Data]{}, false, errors.New("requiredPeriodStart is zero")
@@ -167,6 +182,10 @@ func (c *CacheBase[Data, Key]) get(key Key, periodStart, periodEnd, minPeriodSta
 	}, false, nil
 }
 
+// Retrieves period boundaries (and edge entries) of a cached period, closest to the specified point from the start.
+// If nonEmpty is true, then only non-empty periods are considered.
+// If point is inside of some period, that period is returned.
+// If no period is found, nil is returned.
 func (c *CacheBase[Data, Key]) GetCachedPeriodClosestFromStart(key Key, point time.Time, nonEmpty bool) (*TimePeriodBounds[Data], error) {
 	// TODO: can be also optimized by writing special implementation for GetCachedOrClosestFromStart
 
@@ -207,6 +226,10 @@ func (c *CacheBase[Data, Key]) GetCachedPeriodClosestFromStart(key Key, point ti
 	return res, nil
 }
 
+// Retrieves period boundaries (and edge entries) of a cached period, closest to the specified point from the end.
+// If nonEmpty is true, then only non-empty periods are considered.
+// If point is inside of some period, that period is returned.
+// If no period is found, nil is returned.
 func (c *CacheBase[Data, Key]) GetCachedPeriodClosestFromEnd(key Key, point time.Time, nonEmpty bool) (*TimePeriodBounds[Data], error) {
 	// TODO: can be also optimized by writing special implementation for GetCachedOrClosestFromEnd
 
