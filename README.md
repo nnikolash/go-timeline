@@ -2,6 +2,7 @@
 
 ## What can this library do?
 
+* Store non-continuous segments of virtualy continuous timeline data.
 * Retrives data for given key and custom period.
 * If data is missing for some part of requested period - automatically loads that part (or more) from source.
 * Merges overlapping or conjuncted periods.
