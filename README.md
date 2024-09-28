@@ -1,4 +1,4 @@
-# go-timeline - Timeline data cache for Go
+# go-timeline - Sparse timeline data cache for Go
 
 ## What can this library do?
 
