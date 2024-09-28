@@ -114,7 +114,7 @@ cache := timeline.NewMemoryCache(timeline.MemoryCacheOptions[ChatMessage, string
 })
 ```
 
-###### Check that messages are not yer cached
+###### Check that messages are not yet cached
 
 ```
 chatID := "test-chat-1"
@@ -173,7 +173,7 @@ The only disadvantage is that memory usage grows the more data is requested, bec
 
 Some entries not only have timestamp, but also other index fields, e.g. **ID**. This is supported seemlesly by the library, because order of entries is preserved. So if you want stable ordering of the entries - sort them by `Time + ID` in load funtion.
 
-### Hw to update the most recent entry?
+### How to update the most recent entry?
 
 In some historical data the entries not added, but also updated. Example of such data is **candlestik** history: last candle is updated maybe time before new candle is added.
 
