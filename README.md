@@ -165,15 +165,15 @@ The only disadvantage is that memory usage grows the more data is requested, bec
 
 ## Special use-cases
 
-### Composite keys
+### What is Composite keys?
 
 *Key* is an identification of specific historical timeline. For chats history that would be ID or name of a chat. For candlestick history that would be coin name + timeframe (e.g. `(BTCUSDT, 1h)`). And in such an example of **coin name + timeframe** the key will be a composite key - a structure of two fields. This is supported by the library, but correct funtion for "stringify key" function must be provided.
 
-### Sorting by Time + ID
+### How to sort by Time + ID?
 
 Some entries not only have timestamp, but also other index fields, e.g. **ID**. This is supported seemlesly by the library, because order of entries is preserved. So if you want stable ordering of the entries - sort them by `Time + ID` in load funtion.
 
-### Updating the most recent entry
+### Hw to update the most recent entry?
 
 In some historical data the entries not added, but also updated. Example of such data is **candlestik** history: last candle is updated maybe time before new candle is added.
 
@@ -182,14 +182,14 @@ So in case of candlestick history, the function, which loads data from source, m
 
 For such case not only last entry must be updated, but every edge entry on older side of requested period. See next point for explanation why.
 
-### Updating edge entries
+### Importance of updating edge entries
 
 If the nature of your historical data includes updates of last entry, you need to implement load function, so that it **always loads the last** **entry** before requested period. This is because at the time, when that period was fetched, that entry was most likely **incomplete** and later received more updates, which are missing in the cache. So you need to extend fetched period to overwrite that entry with its latest version.
 
 For example, image loading 1h candles first for date `[10:00; now]` at `12:15`. That would candles for `[10:00; 11:00), [11:00; 12:00)` and `[12:00:13:00)`. Then some time passes, and at `14:30` you want to load  candles for bigger period `[10:00; now]` (so `[10:00; 14:30]`). The library would ask your load funtion to load period `[12:15; now]`. But the candles are identifies by their `Open Time `, that would load only candles `[13:00; 14:00)` and `[14:00; 15:00)`. Candle `[12:00; 13:00)` is not included, because its `Open Time` is smaller than `12:15`. But because of this that edge candle `[12:00; 13:00)` won't received updated, which were done between `(12:15 and 13:00)`.
 To fix that, load funtion must load one candle more than requested. It will return it to the library and library will overwrite the obsolete version. But don't forget to also extend the period returned to the load funtion - it must at least include ALL returned entries.
 
-### Source does not provide convenient interface
+### What if source does not provide convenient interface?
 
 Sometimes source of data may not provide interface for getting data for a **custom period** - sometimes only **pagination** is available.
 This is not a problem. In that case, the funtion for loadig data from source must load all the pages until requested period and the period itself, an return everything it loaded. The library will cache all of that, which might be useful in future, especially you persist cache content.
