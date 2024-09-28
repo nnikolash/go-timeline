@@ -20,10 +20,10 @@ This library uses [go-sparse](https://github.com/nnikolash/go-sparse) as base co
 
 This library is a good choice if:
 
-* You algorythm reads custom **periods of continuous historical data**. Examples of such data could be **market data** and **chat messages**.
-* Reading of (almost) **same periods** is expected to occur many times (and maybe by many **parallel** algorythms).
-* Reading data from **source** is rather **slow**.
-* Feeding the **entire history** to algorythm is **not an option**: either it is too big and you don't know which smaller periods will be requested, or you just don't wan't to configure it every time.
+* You algorythm reads **custom periods** of virtually **continuous historical data**. Examples of such historical data could be **market data** and **chat messages**.
+* Reading of (almost) **same periods** many times (e.g. due to many **parallel** algorythms).
+* Reading data from **source** every time would be too **slow**.
+* Feeding the **entire history** to algorythm is **not an option**: either it is too big and you don't know which smaller custom periods will be requested, or you just don't wan't to bother configure it every time.
 
 So the idea is that the **algorythm decided** which periods of data it requires, and requests them through this lib.
 
@@ -34,7 +34,7 @@ My software has optimization module, which concurrently runs throusands replicas
 * it would be **super slow** to load each small period and for each replica.
 * It would result in a ban of my account, because I would immediatelly reach **API limits**.
 
-By using this library my algorythms decides on its own which period to load, the library loads the data which is missing, and it is merged with already cached data. And it is done only once per replica of strategy.
+By using this library my algorythm decides on its own which period to load, the library loads the data (only the part which is missing), and new data is merged with already cached data. And it is done only once per replica of strategy.
 
 ## Usage
 
