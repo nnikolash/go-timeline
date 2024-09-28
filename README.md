@@ -158,10 +158,10 @@ Note, that requested data is not stored in any long-term memory location - it is
 
 ### Two-layer cache
 
-The library provided two layer cache in form of `MemoryAndSqliteCache. `The intention is to have slow pesistent layer and fast volatile later to work together to sum their pros and negate their cons.
+The library provided two layer cache in form of `MemoryAndSqliteCache`. The intention is to have slow pesistent layer and fast volatile later to work together to sum their pros and negate their cons.
 
-When data is added into this cache, it stored both in memory and SQLite caches. When data is requested for soe key, it is first seached in memory cache, and only if it is missing it is loaded from SQLite cache into memory cache. So it is both effectively persistent and fast.
-The only disadvantage is that memory usage grows the more data is requested, because it is loaded from disk and stored in memory cache.
+When data is added into this cache, it stored in both memory and SQLite caches. When data is requested for some key, it is first seached in memory cache, and only if it is missing there it is loaded from SQLite cache into memory cache. So it is both effectively persistent and fast.
+The only disadvantage is that memory usage grows after more data is requested, because it is loaded from disk and stored in memory cache.
 
 ## Special use-cases
 
