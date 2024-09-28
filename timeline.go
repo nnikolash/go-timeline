@@ -8,7 +8,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-type CacheFetchResult[Data any] struct {
+type CacheStateSegment[Data any] struct {
 	PeriodStart time.Time
 	PeriodEnd   time.Time
 	Data        []Data
@@ -18,7 +18,7 @@ type CacheState[Data any] sparse.SeriesState[Data, time.Time]
 
 type PeriodBounds = sparse.PeriodBounds[time.Time]
 
-type CacheSource[Data any, Key any] func(key Key, periodStart, periodEnd time.Time, closestFromStart, closestFromEnd *Data, extra interface{}) (CacheFetchResult[Data], error)
+type CacheSource[Data any, Key any] func(key Key, periodStart, periodEnd time.Time, closestFromStart, closestFromEnd *Data, extra interface{}) (CacheStateSegment[Data], error)
 
 type CacheData[Data any] sparse.SeriesData[Data, time.Time]
 
@@ -28,7 +28,7 @@ type CacheData[Data any] sparse.SeriesData[Data, time.Time]
 // 	Data        CacheData[Data]
 // }
 
-//type CacheEntry[Data any] sparse.SeriesEntryFields[Data, time.Time]
+//type CacheEntry[Data any] sparse.SeriesSegmentFields[Data, time.Time]
 
 type TimePeriodBounds[Data any] struct {
 	sparse.PeriodBounds[time.Time]
@@ -39,7 +39,7 @@ type TimePeriodBounds[Data any] struct {
 type Cache[Data any, Key any] interface {
 	Get(key Key, periodStart, periodEnd time.Time, extra interface{}) ([]Data, error)
 	GetCached(key Key, periodStart, periodEnd time.Time) ([]Data, bool, error)
-	GetCachedAll(key Key, requiredPeriodStart, requiredPeriodEnd, minPeriodStart, maxPeriodEnd time.Time) (CacheFetchResult[Data], bool, error)
+	GetCachedAll(key Key, requiredPeriodStart, requiredPeriodEnd, minPeriodStart, maxPeriodEnd time.Time) (CacheStateSegment[Data], bool, error)
 	GetCachedPeriodClosestFromStart(key Key, point time.Time, nonEmpty bool) (*TimePeriodBounds[Data], error)
 	GetCachedPeriodClosestFromEnd(key Key, point time.Time, nonEmpty bool) (*TimePeriodBounds[Data], error)
 	Close()
@@ -65,16 +65,16 @@ func NewCacheBase[Data any, Key any](opts CacheBaseOptions[Data, Key]) *CacheBas
 	}
 
 	return &CacheBase[Data, Key]{
-		opts:          opts,
-		entriesPerKey: make(map[string]*sparseSeriesT[Data]),
-		m:             &sync.RWMutex{},
+		opts:         opts,
+		seriesPerKey: make(map[string]*sparseSeriesT[Data]),
+		m:            &sync.RWMutex{},
 	}
 }
 
 type CacheBase[Data any, Key any] struct {
-	opts          CacheBaseOptions[Data, Key]
-	entriesPerKey map[string]*sparseSeriesT[Data]
-	m             *sync.RWMutex
+	opts         CacheBaseOptions[Data, Key]
+	seriesPerKey map[string]*sparseSeriesT[Data]
+	m            *sync.RWMutex
 }
 
 var _ Cache[struct{}, int64] = &CacheBase[struct{}, int64]{}
@@ -104,40 +104,40 @@ func (c *CacheBase[Data, Key]) GetCached(key Key, periodStart, periodEnd time.Ti
 // The error may be returned due to failure of loading data from persistent storage.
 // If Load function is not configured, then error is never returned.
 // Error is never returned due to loading from source, because it never happens.
-func (c *CacheBase[Data, Key]) GetCachedAll(key Key, requiredPeriodStart, requiredPeriodEnd, minPeriodStart, maxPeriodEnd time.Time) (CacheFetchResult[Data], bool, error) {
+func (c *CacheBase[Data, Key]) GetCachedAll(key Key, requiredPeriodStart, requiredPeriodEnd, minPeriodStart, maxPeriodEnd time.Time) (CacheStateSegment[Data], bool, error) {
 	if requiredPeriodStart.IsZero() {
-		return CacheFetchResult[Data]{}, false, errors.New("requiredPeriodStart is zero")
+		return CacheStateSegment[Data]{}, false, errors.New("requiredPeriodStart is zero")
 	}
 	if requiredPeriodEnd.IsZero() {
-		return CacheFetchResult[Data]{}, false, errors.New("requiredPeriodEnd is zero")
+		return CacheStateSegment[Data]{}, false, errors.New("requiredPeriodEnd is zero")
 	}
 	if minPeriodStart.IsZero() {
-		return CacheFetchResult[Data]{}, false, errors.New("minPeriodStart is zero")
+		return CacheStateSegment[Data]{}, false, errors.New("minPeriodStart is zero")
 	}
 	if maxPeriodEnd.IsZero() {
-		return CacheFetchResult[Data]{}, false, errors.New("maxPeriodEnd is zero")
+		return CacheStateSegment[Data]{}, false, errors.New("maxPeriodEnd is zero")
 	}
 
 	return c.get(key, requiredPeriodStart, requiredPeriodEnd, minPeriodStart, maxPeriodEnd, false, nil)
 }
 
-func (c *CacheBase[Data, Key]) get(key Key, periodStart, periodEnd, minPeriodStart, maxPeriodEnd time.Time, fetchAllowed bool, extra interface{}) (CacheFetchResult[Data], bool, error) {
+func (c *CacheBase[Data, Key]) get(key Key, periodStart, periodEnd, minPeriodStart, maxPeriodEnd time.Time, fetchAllowed bool, extra interface{}) (CacheStateSegment[Data], bool, error) {
 	keyStr := c.opts.KeyToStr(key)
 
 	c.m.RLock()
-	series := c.entriesPerKey[keyStr]
+	series := c.seriesPerKey[keyStr]
 	c.m.RUnlock()
 
 	if series == nil {
 		var err error
-		series, err = c.initKeyEntriesStorage(keyStr, key)
+		series, err = c.initKeySeriesStorage(keyStr, key)
 		if err != nil {
-			return CacheFetchResult[Data]{}, false, errors.Wrapf(err, "failed to initialize entries storage for '%v'", keyStr)
+			return CacheStateSegment[Data]{}, false, errors.Wrapf(err, "failed to initialize series storage for '%v'", keyStr)
 		}
 	}
 
-	if len(series.Entries()) == 0 && !fetchAllowed {
-		return CacheFetchResult[Data]{}, false, nil
+	if len(series.Segments()) == 0 && !fetchAllowed {
+		return CacheStateSegment[Data]{}, false, nil
 	}
 
 	var err error
@@ -146,14 +146,14 @@ func (c *CacheBase[Data, Key]) get(key Key, periodStart, periodEnd, minPeriodSta
 		var data []Data
 
 		if data, err = c.getCachedData(series, periodStart, periodEnd); err == nil {
-			return CacheFetchResult[Data]{PeriodStart: periodStart, PeriodEnd: periodEnd, Data: data}, true, nil
+			return CacheStateSegment[Data]{PeriodStart: periodStart, PeriodEnd: periodEnd, Data: data}, true, nil
 		}
 	} else {
 		if fetchAllowed {
-			return CacheFetchResult[Data]{}, false, errors.New("not implemented: point is not allowed to be set when fetchAllowed is true")
+			return CacheStateSegment[Data]{}, false, errors.New("not implemented: point is not allowed to be set when fetchAllowed is true")
 		}
 
-		var fetched CacheFetchResult[Data]
+		var fetched CacheStateSegment[Data]
 
 		if fetched, err = c.getCachedAllData(series, periodStart, periodEnd, minPeriodStart, maxPeriodEnd); err == nil {
 			return fetched, true, nil
@@ -163,19 +163,19 @@ func (c *CacheBase[Data, Key]) get(key Key, periodStart, periodEnd, minPeriodSta
 	var missingPeriodErr *sparse.MissingPeriodError[time.Time]
 
 	if !errors.As(err, &missingPeriodErr) {
-		return CacheFetchResult[Data]{}, false, errors.Wrapf(err, "failed to fetch from sparse storage entries of '%v' for period [%v; %v]", keyStr, periodStart, periodEnd)
+		return CacheStateSegment[Data]{}, false, errors.Wrapf(err, "failed to fetch from sparse storage entries of '%v' for period [%v; %v]", keyStr, periodStart, periodEnd)
 	}
 	if !fetchAllowed {
-		return CacheFetchResult[Data]{}, false, nil
+		return CacheStateSegment[Data]{}, false, nil
 	}
 
 	// TODO: further optimization can be done by fetching only missing periods
 	data, err := c.loadDataFromSourceIntoCache(key, series, periodStart, periodEnd, extra)
 	if err != nil {
-		return CacheFetchResult[Data]{}, false, err
+		return CacheStateSegment[Data]{}, false, err
 	}
 
-	return CacheFetchResult[Data]{
+	return CacheStateSegment[Data]{
 		PeriodStart: periodStart,
 		PeriodEnd:   periodEnd,
 		Data:        data,
@@ -192,7 +192,7 @@ func (c *CacheBase[Data, Key]) GetCachedPeriodClosestFromStart(key Key, point ti
 	keyStr := c.opts.KeyToStr(key)
 
 	c.m.RLock()
-	series := c.entriesPerKey[keyStr]
+	series := c.seriesPerKey[keyStr]
 	c.m.RUnlock()
 
 	if series == nil {
@@ -202,22 +202,22 @@ func (c *CacheBase[Data, Key]) GetCachedPeriodClosestFromStart(key Key, point ti
 	series.Access.RLock()
 	defer series.Access.RUnlock()
 
-	entry := series.GetPeriodClosestFromStart(point, nonEmpty)
-	if entry == nil {
+	segment := series.GetPeriodClosestFromStart(point, nonEmpty)
+	if segment == nil {
 		return nil, nil
 	}
 
 	res := &TimePeriodBounds[Data]{
-		PeriodBounds: sparse.PeriodBounds[time.Time]{PeriodStart: entry.PeriodStart, PeriodEnd: entry.PeriodEnd},
+		PeriodBounds: sparse.PeriodBounds[time.Time]{PeriodStart: segment.PeriodStart, PeriodEnd: segment.PeriodEnd},
 	}
-	if !entry.Empty {
+	if !segment.Empty {
 		var err error
-		res.First, err = entry.First()
+		res.First, err = segment.First()
 		if err != nil {
 			return nil, err
 		}
 
-		res.Last, err = entry.Last()
+		res.Last, err = segment.Last()
 		if err != nil {
 			return nil, err
 		}
@@ -236,7 +236,7 @@ func (c *CacheBase[Data, Key]) GetCachedPeriodClosestFromEnd(key Key, point time
 	keyStr := c.opts.KeyToStr(key)
 
 	c.m.RLock()
-	series := c.entriesPerKey[keyStr]
+	series := c.seriesPerKey[keyStr]
 	c.m.RUnlock()
 
 	if series == nil {
@@ -246,21 +246,21 @@ func (c *CacheBase[Data, Key]) GetCachedPeriodClosestFromEnd(key Key, point time
 	series.Access.RLock()
 	defer series.Access.RUnlock()
 
-	entry := series.GetPeriodClosestFromEnd(point, nonEmpty)
-	if entry == nil {
+	segment := series.GetPeriodClosestFromEnd(point, nonEmpty)
+	if segment == nil {
 		return nil, nil
 	}
 
 	res := &TimePeriodBounds[Data]{
-		PeriodBounds: sparse.PeriodBounds[time.Time]{PeriodStart: entry.PeriodStart, PeriodEnd: entry.PeriodEnd}}
-	if !entry.Empty {
+		PeriodBounds: sparse.PeriodBounds[time.Time]{PeriodStart: segment.PeriodStart, PeriodEnd: segment.PeriodEnd}}
+	if !segment.Empty {
 		var err error
-		res.First, err = entry.First()
+		res.First, err = segment.First()
 		if err != nil {
 			return nil, err
 		}
 
-		res.Last, err = entry.Last()
+		res.Last, err = segment.Last()
 		if err != nil {
 			return nil, err
 		}
@@ -280,13 +280,13 @@ func newSparseTimeSeries[Data any](getTimestamp func(d *Data) time.Time, dataFac
 	)
 }
 
-func (c *CacheBase[Data, Key]) initKeyEntriesStorage(keyStr string, key Key) (*sparseSeriesT[Data], error) {
+func (c *CacheBase[Data, Key]) initKeySeriesStorage(keyStr string, key Key) (*sparseSeriesT[Data], error) {
 	c.m.Lock()
 	defer c.m.Unlock()
 
-	existingKeyEntries := c.entriesPerKey[keyStr]
-	if existingKeyEntries != nil {
-		return existingKeyEntries, nil
+	existingKeySeries := c.seriesPerKey[keyStr]
+	if existingKeySeries != nil {
+		return existingKeySeries, nil
 	}
 
 	newSeries := &sparseSeriesT[Data]{
@@ -307,7 +307,7 @@ func (c *CacheBase[Data, Key]) initKeyEntriesStorage(keyStr string, key Key) (*s
 	if err := c.loadCache(key, newSeries); err != nil {
 		return nil, errors.Wrapf(err, "failed to load cache for '%v'", keyStr)
 	}
-	c.entriesPerKey[keyStr] = newSeries
+	c.seriesPerKey[keyStr] = newSeries
 
 	return newSeries, nil
 }
@@ -323,12 +323,12 @@ func (c *CacheBase[Data, Key]) loadCache(key Key, series *sparseSeriesT[Data]) e
 	}
 
 	prevPeriodEnd := time.Time{}
-	for i, entry := range state.Entries {
-		if err := c.verifyPeriodData(entry.PeriodStart, entry.PeriodEnd, nil, prevPeriodEnd); err != nil {
+	for i, segment := range state.Segments {
+		if err := c.verifyPeriodData(segment.PeriodStart, segment.PeriodEnd, nil, prevPeriodEnd); err != nil {
 			return errors.Wrapf(err, "loaded cache of '%v' failed verification at index %v", c.opts.KeyToStr(key), i)
 		}
 
-		prevPeriodEnd = entry.PeriodEnd
+		prevPeriodEnd = segment.PeriodEnd
 	}
 
 	if err := series.Restore((*sparse.SeriesState[Data, time.Time])(state)); err != nil {
@@ -392,14 +392,14 @@ func (c *CacheBase[Data, Key]) getCachedData(series *sparseSeriesT[Data], period
 	return series.Get(periodStart, periodEnd)
 }
 
-func (c *CacheBase[Data, Key]) getCachedAllData(series *sparseSeriesT[Data], requiredPeriodStart, requiredPeriodEnd, minPeriodStart, maxPeriodEnd time.Time) (CacheFetchResult[Data], error) {
+func (c *CacheBase[Data, Key]) getCachedAllData(series *sparseSeriesT[Data], requiredPeriodStart, requiredPeriodEnd, minPeriodStart, maxPeriodEnd time.Time) (CacheStateSegment[Data], error) {
 	series.Access.RLock()
 	defer series.Access.RUnlock()
 
 	period := series.GetPeriod(requiredPeriodStart, requiredPeriodEnd)
 	if period == nil {
 		// TODO: this is not cool
-		return CacheFetchResult[Data]{}, &sparse.MissingPeriodError[time.Time]{PeriodStart: requiredPeriodStart, PeriodEnd: requiredPeriodEnd}
+		return CacheStateSegment[Data]{}, &sparse.MissingPeriodError[time.Time]{PeriodStart: requiredPeriodStart, PeriodEnd: requiredPeriodEnd}
 	}
 
 	assert(!period.PeriodStart.After(requiredPeriodStart) && !period.PeriodEnd.Before(requiredPeriodEnd),
@@ -409,10 +409,10 @@ func (c *CacheBase[Data, Key]) getCachedAllData(series *sparseSeriesT[Data], req
 
 	fetchedPeriodStart, fetchedPeriodEnd, data, err := period.GetAllInRange(minPeriodStart, maxPeriodEnd)
 	if err != nil {
-		return CacheFetchResult[Data]{}, err
+		return CacheStateSegment[Data]{}, err
 	}
 
-	return CacheFetchResult[Data]{
+	return CacheStateSegment[Data]{
 		PeriodStart: fetchedPeriodStart,
 		PeriodEnd:   fetchedPeriodEnd,
 		Data:        data,
@@ -457,31 +457,31 @@ func (c *CacheBase[Data, Key]) loadDataFromSourceIntoCache(key Key, series *spar
 		}
 	}
 
-	entryFromSource, err := c.fetchEntriesFromSource(key, fetchPeriodStart, fetchPeriodEnd, closestFromStartData, closestFromEndData, extra)
+	dataFromSource, err := c.fetchDataFromSource(key, fetchPeriodStart, fetchPeriodEnd, closestFromStartData, closestFromEndData, extra)
 	if err != nil {
 		return nil, err
 	}
 
 	// Using Get with original bounds, because new data may contain bigger period than requested.
-	return c.addAndGetCacheEntries(key, series, entryFromSource, periodStart, periodEnd)
+	return c.addNewDataAndGetFromCache(key, series, dataFromSource, periodStart, periodEnd)
 }
 
-func (c *CacheBase[Data, Key]) addAndGetCacheEntries(key Key, series *sparseSeriesT[Data],
-	addedEntry CacheFetchResult[Data], getPeriodStart, getPeriodEnd time.Time) ([]Data, error) {
+func (c *CacheBase[Data, Key]) addNewDataAndGetFromCache(key Key, series *sparseSeriesT[Data],
+	addedPeriod CacheStateSegment[Data], getPeriodStart, getPeriodEnd time.Time) ([]Data, error) {
 
 	series.Access.Lock()
 	defer series.Access.Unlock()
 
-	series.AddPeriod(addedEntry.PeriodStart, addedEntry.PeriodEnd, addedEntry.Data)
+	series.AddPeriod(addedPeriod.PeriodStart, addedPeriod.PeriodEnd, addedPeriod.Data)
 
-	allEntries := series.GetAllEntries()
-	allEntriesFields := make([]*sparse.SeriesEntryFields[Data, time.Time], 0, len(allEntries))
+	allSegments := series.GetAllSegments()
+	allSegmentsFields := make([]*sparse.SeriesSegmentFields[Data, time.Time], 0, len(allSegments))
 
-	for _, entry := range allEntries {
-		allEntriesFields = append(allEntriesFields, &entry.SeriesEntryFields)
+	for _, segment := range allSegments {
+		allSegmentsFields = append(allSegmentsFields, &segment.SeriesSegmentFields)
 	}
 
-	if err := c.opts.Storage.Save(key, &CacheState[Data]{Entries: allEntriesFields}, []*CacheFetchResult[Data]{&addedEntry}); err != nil {
+	if err := c.opts.Storage.Save(key, &CacheState[Data]{Segments: allSegmentsFields}, []*CacheStateSegment[Data]{&addedPeriod}); err != nil {
 		return nil, err
 	}
 
@@ -493,7 +493,7 @@ func (c *CacheBase[Data, Key]) addAndGetCacheEntries(key Key, series *sparseSeri
 	return res, nil
 }
 
-func (c *CacheBase[Data, Key]) fetchEntriesFromSource(key Key, periodStart, periodEnd time.Time, closestFromStart, closestFromEnd *Data, extra interface{}) (CacheFetchResult[Data], error) {
+func (c *CacheBase[Data, Key]) fetchDataFromSource(key Key, periodStart, periodEnd time.Time, closestFromStart, closestFromEnd *Data, extra interface{}) (CacheStateSegment[Data], error) {
 	if closestFromStart != nil {
 		assert(!periodStart.Before(c.opts.GetTimestamp(closestFromStart)), "%v: periodStart < closestFromStart: %v < %v", key, periodStart, c.opts.GetTimestamp(closestFromStart))
 	}
@@ -501,24 +501,24 @@ func (c *CacheBase[Data, Key]) fetchEntriesFromSource(key Key, periodStart, peri
 		assert(!periodEnd.After(c.opts.GetTimestamp(closestFromEnd)), "periodEnd > closestFromEnd: %v > %v", periodEnd, c.opts.GetTimestamp(closestFromEnd))
 	}
 
-	entryFromSource, err := c.opts.GetFromSource(key, periodStart, periodEnd, closestFromStart, closestFromEnd, extra)
+	dataFromSource, err := c.opts.GetFromSource(key, periodStart, periodEnd, closestFromStart, closestFromEnd, extra)
 	if err != nil {
-		return CacheFetchResult[Data]{}, errors.Wrapf(err, "failed to fetch from source entries of '%v' for period [%v; %v]", c.opts.KeyToStr(key), periodStart, periodEnd)
+		return CacheStateSegment[Data]{}, errors.Wrapf(err, "failed to fetch from source entries of '%v' for period [%v; %v]", c.opts.KeyToStr(key), periodStart, periodEnd)
 	}
-	if entryFromSource.PeriodStart.IsZero() || entryFromSource.PeriodEnd.IsZero() {
-		return CacheFetchResult[Data]{}, errors.Errorf("fetched entries of '%v' for period [%v; %v] have zero period bounds: [%v; %v]",
-			c.opts.KeyToStr(key), periodStart, periodEnd, entryFromSource.PeriodStart, entryFromSource.PeriodEnd)
+	if dataFromSource.PeriodStart.IsZero() || dataFromSource.PeriodEnd.IsZero() {
+		return CacheStateSegment[Data]{}, errors.Errorf("fetched data entries of '%v' for period [%v; %v] have zero period bounds: [%v; %v]",
+			c.opts.KeyToStr(key), periodStart, periodEnd, dataFromSource.PeriodStart, dataFromSource.PeriodEnd)
 	}
-	if entryFromSource.PeriodStart.After(periodStart) || entryFromSource.PeriodEnd.Before(periodEnd) {
-		return CacheFetchResult[Data]{}, errors.Errorf("fetched entries of '%v' for period [%v; %v] does not contain requested period [%v; %v]", c.opts.KeyToStr(key),
-			entryFromSource.PeriodStart, entryFromSource.PeriodEnd, periodStart, periodEnd)
-	}
-
-	if err := c.verifyPeriodData(entryFromSource.PeriodStart, entryFromSource.PeriodEnd, entryFromSource.Data, time.Time{}); err != nil {
-		return CacheFetchResult[Data]{}, errors.Wrapf(err, "fetched entries of '%v' for period [%v; %v] failed verification", c.opts.KeyToStr(key), periodStart, periodEnd)
+	if dataFromSource.PeriodStart.After(periodStart) || dataFromSource.PeriodEnd.Before(periodEnd) {
+		return CacheStateSegment[Data]{}, errors.Errorf("fetched data entries of '%v' for period [%v; %v] does not contain requested period [%v; %v]", c.opts.KeyToStr(key),
+			dataFromSource.PeriodStart, dataFromSource.PeriodEnd, periodStart, periodEnd)
 	}
 
-	return entryFromSource, nil
+	if err := c.verifyPeriodData(dataFromSource.PeriodStart, dataFromSource.PeriodEnd, dataFromSource.Data, time.Time{}); err != nil {
+		return CacheStateSegment[Data]{}, errors.Wrapf(err, "fetched data entries of '%v' for period [%v; %v] failed verification", c.opts.KeyToStr(key), periodStart, periodEnd)
+	}
+
+	return dataFromSource, nil
 }
 
 func (c *CacheBase[Data, Key]) Close() {
@@ -538,6 +538,6 @@ func isTimeContinuous(smaller, bigger time.Time) bool {
 
 type CacheStorage[Data any, Key any] interface {
 	Load(key Key) (*CacheState[Data], error)
-	Save(key Key, state *CacheState[Data], updated []*CacheFetchResult[Data]) error
+	Save(key Key, state *CacheState[Data], updated []*CacheStateSegment[Data]) error
 	Add(key Key, periodStart, periodEnd time.Time, data []Data) (CacheData[Data], error)
 }

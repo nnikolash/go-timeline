@@ -56,16 +56,16 @@ func TestExampleBasicUsage(t *testing.T) {
 		periodStart, periodEnd time.Time,
 		closestFromStart, closestFromEnd *ChatMessage,
 		extra interface{},
-	) (timeline.CacheFetchResult[ChatMessage], error) {
+	) (timeline.CacheStateSegment[ChatMessage], error) {
 		msgs, err := GetMessagesFromServer(key, periodStart, periodEnd)
 		if err != nil {
-			return timeline.CacheFetchResult[ChatMessage]{}, fmt.Errorf("loading chat messages from server: %w", err)
+			return timeline.CacheStateSegment[ChatMessage]{}, fmt.Errorf("loading chat messages from server: %w", err)
 		}
 
 		// Note that period is explicitly set. It must contain at least period [periodStart, periodEnd],
 		// but can be bigger. Even if there is no data at that period, PeriodStart and PeriodEnd must be set
 		// to indicate that the period is empty.
-		return timeline.CacheFetchResult[ChatMessage]{
+		return timeline.CacheStateSegment[ChatMessage]{
 			Data:        msgs,
 			PeriodStart: periodStart,
 			PeriodEnd:   periodEnd,

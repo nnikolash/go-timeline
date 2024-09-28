@@ -38,7 +38,7 @@ type MemoryAndSqliteCache[Data any, Key any, ID comparable] struct {
 
 var _ Cache[struct{}, int64] = &MemoryAndSqliteCache[struct{}, int64, string]{}
 
-func (c *MemoryAndSqliteCache[Data, Key, ID]) getFromSecondLayer(key Key, periodStart, periodEnd time.Time, closestFromStart, closestFromEnd *Data, extra interface{}) (CacheFetchResult[Data], error) {
+func (c *MemoryAndSqliteCache[Data, Key, ID]) getFromSecondLayer(key Key, periodStart, periodEnd time.Time, closestFromStart, closestFromEnd *Data, extra interface{}) (CacheStateSegment[Data], error) {
 	forwardFetchPeriodStart := periodStart
 	forwardFetchPeriodEnd := periodEnd
 	requestedPeriodDuration := periodEnd.Sub(periodStart)
@@ -51,7 +51,7 @@ func (c *MemoryAndSqliteCache[Data, Key, ID]) getFromSecondLayer(key Key, period
 
 	cachedInSecondLayer, isCached, err := c.sqliteCache.GetCachedAll(key, periodStart, periodEnd, forwardFetchPeriodStart, forwardFetchPeriodEnd)
 	if err != nil {
-		return CacheFetchResult[Data]{}, err
+		return CacheStateSegment[Data]{}, err
 	}
 	if isCached {
 		return cachedInSecondLayer, nil
@@ -61,10 +61,10 @@ func (c *MemoryAndSqliteCache[Data, Key, ID]) getFromSecondLayer(key Key, period
 	// TODO: GetAll(s, e, min,max) instead of Get
 	data, err := c.sqliteCache.Get(key, periodStart, periodEnd, extra)
 	if err != nil {
-		return CacheFetchResult[Data]{}, err
+		return CacheStateSegment[Data]{}, err
 	}
 
-	return CacheFetchResult[Data]{
+	return CacheStateSegment[Data]{
 		PeriodStart: periodStart,
 		PeriodEnd:   periodEnd,
 		Data:        data,

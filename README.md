@@ -139,11 +139,29 @@ For examples, see folder `examples` or test files `*_test.go`.
 
 #### Memory cache
 
+This cache implementation uses in-memory array as a storage for data entries. It uses `sparse.ArrayData` as base.
+It can be supplied with `Load` and `Save` functions to make this cache persistent.
+
 #### File cache
+
+This implementation of persistent cache, which serializes data entries into JSON and stores them in a file in a specified folder, one file per key.
+When data is requested for some key, the entire file content is loaded into memory.
+
+This is not the most effective was of storing cache, but it is simple and reliable and serves more as a demonstration. Also it might be convenient to be able to read JSON files by other utilities.
 
 #### SQLite cache
 
+This is implementation of persistent cache, which uses SQLite file dabatase as its persistent storage, one dabatase file per key.
+When timeline is requested for some key, it is loaded its corresponding database file.
+
+Note, that requested data is not stored in any long-term memory location - it is just returned to the called. And reading from database is not as fast as just reading from memory, so if speed is imporant you would need to also add some in-memory caching (see `Two-layer cache` section). But the advantage of using just plain SQLite cache is that used memory size is not groving with usage of cache - it stays on disk no matter how much data was requested.
+
 #### Two-layer cache
+
+The library provided two layer cache in form of `MemoryAndSqliteCache. `The intention is to have slow pesistent layer and fast volatile later to work together to sum their pros and negate their cons.
+
+When data is added into this cache, it stored both in memory and SQLite caches. When data is requested for soe key, it is first seached in memory cache, and only if it is missing it is loaded from SQLite cache into memory cache. So it is both effectively persistent and fast.
+The only disadvantage is that memory usage grows the more data is requested, because it is loaded from disk and stored in memory cache.
 
 ## Special use-cases
 

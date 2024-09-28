@@ -75,27 +75,27 @@ func (c *FileCache[Data, Key]) loadCacheFromFile(key Key) (*MemoryCacheState[Dat
 		return nil, nil
 	}
 
-	var dump []*CacheFetchResult[Data]
+	var dump []*CacheStateSegment[Data]
 	if err := json.Unmarshal(cacheBytes, &dump); err != nil {
 		return nil, errors.Wrapf(err, "failed to unmarshal cache from file %v: %v", cacheFilePath, string(cacheBytes))
 	}
 
 	return &MemoryCacheState[Data]{
-		Entries: dump,
+		Segments: dump,
 	}, nil
 }
 
-func (c *FileCache[Data, Key]) saveCacheToFile(key Key, state *CacheState[Data], _ []*CacheFetchResult[Data]) error {
-	var dump []*CacheFetchResult[Data]
-	for _, entry := range state.Entries {
-		data, err := entry.Data.Get(entry.PeriodStart, entry.PeriodEnd)
+func (c *FileCache[Data, Key]) saveCacheToFile(key Key, state *CacheState[Data], _ []*CacheStateSegment[Data]) error {
+	var dump []*CacheStateSegment[Data]
+	for _, segment := range state.Segments {
+		data, err := segment.Data.Get(segment.PeriodStart, segment.PeriodEnd)
 		if err != nil {
 			return err
 		}
 
-		dump = append(dump, &CacheFetchResult[Data]{
-			PeriodStart: entry.PeriodStart,
-			PeriodEnd:   entry.PeriodEnd,
+		dump = append(dump, &CacheStateSegment[Data]{
+			PeriodStart: segment.PeriodStart,
+			PeriodEnd:   segment.PeriodEnd,
 			Data:        data,
 		})
 	}

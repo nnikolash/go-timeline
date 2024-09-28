@@ -7,7 +7,7 @@ import (
 )
 
 // Save cache to persistent storage
-type SaveCacheFunc[Data any, Key any] func(key Key, state *CacheState[Data], updated []*CacheFetchResult[Data]) error
+type SaveCacheFunc[Data any, Key any] func(key Key, state *CacheState[Data], updated []*CacheStateSegment[Data]) error
 
 // Load cache from persistent storage
 type LoadCaheFunc[Data any, Key any] func(key Key) (*MemoryCacheState[Data], error)
@@ -22,7 +22,7 @@ type MemoryCacheOptions[Data any, Key any] struct {
 }
 
 type MemoryCacheState[Data any] struct {
-	Entries []*CacheFetchResult[Data]
+	Segments []*CacheStateSegment[Data]
 }
 
 func NewMemoryCache[Data any, Key any](opts MemoryCacheOptions[Data, Key]) *MemoryCache[Data, Key] {
@@ -50,7 +50,7 @@ var _ Cache[struct{}, int64] = &MemoryCache[struct{}, int64]{}
 type memoryCacheStorage[Data any, Key any] struct {
 	getTimestamp func(d *Data) time.Time
 	load         func(key Key) (*MemoryCacheState[Data], error)
-	save         func(key Key, state *CacheState[Data], updated []*CacheFetchResult[Data]) error
+	save         func(key Key, state *CacheState[Data], updated []*CacheStateSegment[Data]) error
 }
 
 var _ CacheStorage[struct{}, int64] = &memoryCacheStorage[struct{}, int64]{}
@@ -69,30 +69,30 @@ func (c *memoryCacheStorage[Data, Key]) Load(key Key) (*CacheState[Data], error)
 		return nil, nil
 	}
 
-	stateEntries := make([]*sparse.SeriesEntryFields[Data, time.Time], 0, len(cache.Entries))
+	stateSegments := make([]*sparse.SeriesSegmentFields[Data, time.Time], 0, len(cache.Segments))
 
-	for _, entry := range cache.Entries {
-		d, err := c.Add(key, entry.PeriodStart, entry.PeriodEnd, entry.Data)
+	for _, segment := range cache.Segments {
+		d, err := c.Add(key, segment.PeriodStart, segment.PeriodEnd, segment.Data)
 		if err != nil {
 			panic(err)
 		}
 
-		entry := sparse.SeriesEntryFields[Data, time.Time]{
+		sparseSeriesSegment := sparse.SeriesSegmentFields[Data, time.Time]{
 			PeriodBounds: sparse.PeriodBounds[time.Time]{
-				PeriodStart: entry.PeriodStart,
-				PeriodEnd:   entry.PeriodEnd,
+				PeriodStart: segment.PeriodStart,
+				PeriodEnd:   segment.PeriodEnd,
 			},
 			Data:  d,
-			Empty: len(entry.Data) == 0,
+			Empty: len(segment.Data) == 0,
 		}
 
-		stateEntries = append(stateEntries, &entry)
+		stateSegments = append(stateSegments, &sparseSeriesSegment)
 	}
 
-	return &CacheState[Data]{Entries: stateEntries}, nil
+	return &CacheState[Data]{Segments: stateSegments}, nil
 }
 
-func (c *memoryCacheStorage[Data, Key]) Save(key Key, state *CacheState[Data], updated []*CacheFetchResult[Data]) error {
+func (c *memoryCacheStorage[Data, Key]) Save(key Key, state *CacheState[Data], updated []*CacheStateSegment[Data]) error {
 	if c.save == nil {
 		return nil
 	}

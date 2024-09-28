@@ -17,11 +17,11 @@ import (
 )
 
 type SqliteCacheOptions[Data any, Key any, ID comparable] struct {
-	CacheDir             string
-	GetTimestamp         func(d *Data) time.Time
-	GetID                func(d *Data) ID
-	GetFromSource        CacheSource[Data, Key]
-	KeyToStr             func(Key) string
+	CacheDir             string                  // (Required) Directory to store cache files
+	GetTimestamp         func(d *Data) time.Time // (Required) Get timestamp of data entry
+	GetID                func(d *Data) ID        // (Required) Get ID of data entry. Needed to properly order data in DB if timestamp is not unique.
+	GetFromSource        CacheSource[Data, Key]  // (Required) Fetch data from source
+	KeyToStr             func(Key) string        // (Optional) Convert key to string
 	SkipDataVerification bool
 }
 
@@ -68,38 +68,38 @@ type sqliteCacheStorage[Data any, Key any, ID comparable] struct {
 var _ CacheStorage[struct{}, int64] = &sqliteCacheStorage[struct{}, int64, string]{}
 
 func (c *sqliteCacheStorage[Data, Key, ID]) Load(key Key) (*CacheState[Data], error) {
-	periods, err := c.getAllPeriodsFromDB(key)
+	segments, err := c.getAllSegmentsFromDB(key)
 	if err != nil {
 		return nil, err
 	}
 
-	stateEntries := make([]*sparse.SeriesEntryFields[Data, time.Time], 0, len(periods))
+	stateSegments := make([]*sparse.SeriesSegmentFields[Data, time.Time], 0, len(segments))
 
-	for _, period := range periods {
-		stateEntries = append(stateEntries, &sparse.SeriesEntryFields[Data, time.Time]{
+	for _, segment := range segments {
+		stateSegments = append(stateSegments, &sparse.SeriesSegmentFields[Data, time.Time]{
 			PeriodBounds: sparse.PeriodBounds[time.Time]{
-				PeriodStart: period.Start,
-				PeriodEnd:   period.End,
+				PeriodStart: segment.Start,
+				PeriodEnd:   segment.End,
 			},
 			Data:  newSqliteCacheData[Data](key, c),
-			Empty: period.IsEmpty,
+			Empty: segment.IsEmpty,
 		})
 	}
 	return &CacheState[Data]{
-		Entries: stateEntries,
+		Segments: stateSegments,
 	}, nil
 }
 
-func (c *sqliteCacheStorage[Data, Key, ID]) Save(key Key, state *CacheState[Data], updated []*CacheFetchResult[Data]) error {
-	periods := make([]dbPeriodT, 0, len(state.Entries))
-	for _, entry := range state.Entries {
-		periods = append(periods, dbPeriodT{
-			Start:   entry.PeriodStart,
-			End:     entry.PeriodEnd,
-			IsEmpty: entry.Empty,
+func (c *sqliteCacheStorage[Data, Key, ID]) Save(key Key, state *CacheState[Data], updated []*CacheStateSegment[Data]) error {
+	segments := make([]dbSegmentT, 0, len(state.Segments))
+	for _, segment := range state.Segments {
+		segments = append(segments, dbSegmentT{
+			Start:   segment.PeriodStart,
+			End:     segment.PeriodEnd,
+			IsEmpty: segment.Empty,
 		})
 	}
-	return c.savePeriodsToDB(key, periods)
+	return c.saveSegmentsToDB(key, segments)
 }
 
 func (c *sqliteCacheStorage[Data, Key, ID]) Add(key Key, periodStart, periodEnd time.Time, data []Data) (CacheData[Data], error) {
@@ -135,7 +135,7 @@ func (c *sqliteCacheStorage[Data, Key, ID]) getConn(key Key) (*gorm.DB, error) {
 		return nil, errors.Wrapf(err, "failed to open db file %v", c.cacheFilePath(key))
 	}
 
-	if err := db.AutoMigrate(&dbPeriodT{}, &dbDataT[ID]{}); err != nil {
+	if err := db.AutoMigrate(&dbSegmentT{}, &dbDataT[ID]{}); err != nil {
 		return nil, errors.Wrapf(err, "failed to migrate db schema")
 	}
 
@@ -159,38 +159,38 @@ func (c *sqliteCacheStorage[Data, Key, ID]) dbRequest(key Key, request func(db *
 	})
 }
 
-type dbPeriodT struct {
+type dbSegmentT struct {
 	Start   time.Time `gorm:"index"`
 	End     time.Time
 	IsEmpty bool
 }
 
-func (c *sqliteCacheStorage[Data, Key, ID]) getAllPeriodsFromDB(key Key) ([]dbPeriodT, error) {
-	var periods []dbPeriodT
+func (c *sqliteCacheStorage[Data, Key, ID]) getAllSegmentsFromDB(key Key) ([]dbSegmentT, error) {
+	var segments []dbSegmentT
 	if err := c.dbRequest(key, func(db *gorm.DB) error {
-		return db.Order("start ASC").Find(&periods).Error
+		return db.Order("start ASC").Find(&segments).Error
 	}); err != nil {
 		return nil, err
 	}
 
-	return periods, nil
+	return segments, nil
 }
 
-func (c *sqliteCacheStorage[Data, Key, ID]) savePeriodsToDB(key Key, periods []dbPeriodT) error {
-	// TODO: what is there is more than 999 periods? We cant use batching here...
+func (c *sqliteCacheStorage[Data, Key, ID]) saveSegmentsToDB(key Key, segments []dbSegmentT) error {
+	// TODO: what is there is more than 999 segments? We cant use batching here...
 
-	for i := range periods {
-		periods[i].Start = periods[i].Start.UTC()
-		periods[i].End = periods[i].End.UTC()
+	for i := range segments {
+		segments[i].Start = segments[i].Start.UTC()
+		segments[i].End = segments[i].End.UTC()
 	}
 
 	return c.dbRequest(key, func(db *gorm.DB) error {
-		if err := db.Where("1 = 1").Delete(&dbPeriodT{}).Error; err != nil {
-			return errors.Wrapf(err, "failed to delete periods from db for key %v", key)
+		if err := db.Where("1 = 1").Delete(&dbSegmentT{}).Error; err != nil {
+			return errors.Wrapf(err, "failed to delete segments from db for key %v", key)
 		}
 
-		if err := db.Save(periods).Error; err != nil {
-			return errors.Wrapf(err, "failed to save periods to db for key %v", key)
+		if err := db.Save(segments).Error; err != nil {
+			return errors.Wrapf(err, "failed to save segments to db for key %v", key)
 		}
 
 		return nil

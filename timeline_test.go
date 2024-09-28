@@ -40,9 +40,9 @@ func newCache(
 	var c timeline.Cache[TimelineData, TimelineDataKey]
 
 	if getFromSource == nil {
-		getFromSource = func(key TimelineDataKey, periodStart, periodEnd time.Time, closertFromStart, closerFromEnd *TimelineData, extra interface{}) (timeline.CacheFetchResult[TimelineData], error) {
+		getFromSource = func(key TimelineDataKey, periodStart, periodEnd time.Time, closertFromStart, closerFromEnd *TimelineData, extra interface{}) (timeline.CacheStateSegment[TimelineData], error) {
 			if !fetchFromStorageAllowed.Load() {
-				return timeline.CacheFetchResult[TimelineData]{}, errors.New("fetch from storage is not allowed in test")
+				return timeline.CacheStateSegment[TimelineData]{}, errors.New("fetch from storage is not allowed in test")
 			}
 
 			fetchLock.Lock()
@@ -51,10 +51,10 @@ func newCache(
 			keyStr := fmt.Sprintf("%s_%d", key.Param1, key.Param2)
 			storage, ok := storage[keyStr]
 			if !ok {
-				return timeline.CacheFetchResult[TimelineData]{}, errors.Errorf("wrong key %v", key)
+				return timeline.CacheStateSegment[TimelineData]{}, errors.Errorf("wrong key %v", key)
 			}
 
-			res := timeline.CacheFetchResult[TimelineData]{
+			res := timeline.CacheStateSegment[TimelineData]{
 				PeriodStart: periodStart,
 				PeriodEnd:   periodEnd,
 				Data:        []TimelineData{},
@@ -453,18 +453,18 @@ func TestCache_CacheReturnsMore(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fetchFromStorageAllowed := true
 
-			getFromSource := func(key TimelineDataKey, periodStart, periodEnd time.Time, _, _ *TimelineData, extra interface{}) (timeline.CacheFetchResult[TimelineData], error) {
+			getFromSource := func(key TimelineDataKey, periodStart, periodEnd time.Time, _, _ *TimelineData, extra interface{}) (timeline.CacheStateSegment[TimelineData], error) {
 				if !fetchFromStorageAllowed {
-					return timeline.CacheFetchResult[TimelineData]{}, errors.New("fetch from storage is not allowed in test")
+					return timeline.CacheStateSegment[TimelineData]{}, errors.New("fetch from storage is not allowed in test")
 				}
 
 				keyStr := fmt.Sprintf("%s_%d", key.Param1, key.Param2)
 				data, ok := timelineCacheDataStorage[keyStr]
 				if !ok {
-					return timeline.CacheFetchResult[TimelineData]{}, errors.Errorf("wrong key %v", key)
+					return timeline.CacheStateSegment[TimelineData]{}, errors.Errorf("wrong key %v", key)
 				}
 
-				return timeline.CacheFetchResult[TimelineData]{
+				return timeline.CacheStateSegment[TimelineData]{
 					PeriodStart: data[0].Timestamp,
 					PeriodEnd:   data[len(data)-1].Timestamp,
 					Data:        data,
