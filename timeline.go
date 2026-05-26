@@ -338,17 +338,37 @@ func (c *CacheBase[Data, Key]) loadCache(key Key, series *sparseSeriesT[Data]) e
 	return nil
 }
 
+// fmtT renders a timestamp with both its native form and its absolute (UTC)
+// form, so verification errors are unambiguous when periods and data come
+// from different timezones. Example output:
+//
+//	2024-05-25 11:37:29 +0200 CEST (= 2024-05-25 09:37:29 UTC)
+func fmtT(t time.Time) string {
+	if t.IsZero() {
+		return "<zero>"
+	}
+	if t.Location() == time.UTC {
+		return t.String()
+	}
+	return t.String() + " (= " + t.UTC().String() + ")"
+}
+
+// sourceContractHint is appended to errors that almost always mean the
+// data source returned data inconsistent with its declared PeriodStart /
+// PeriodEnd — a downstream contract violation rather than a library bug.
+const sourceContractHint = " (source contract: PeriodStart <= firstElem.Timestamp <= lastElem.Timestamp <= PeriodEnd; if you return overhead candles, extend PeriodStart back to match firstElem)"
+
 func (c *CacheBase[Data, Key]) verifyPeriodData(periodStart, periodEnd time.Time, periodData []Data, prevPeriodEnd time.Time) error {
 	if c.opts.SkipDataVerification {
 		return nil
 	}
 
 	if periodStart.After(periodEnd) {
-		return errors.Errorf("corrupted loaded cache: periodStart > periodEnd: %v > %v", periodStart, periodEnd)
+		return errors.Errorf("corrupted loaded cache: periodStart > periodEnd: %v > %v", fmtT(periodStart), fmtT(periodEnd))
 	}
 	if !prevPeriodEnd.IsZero() && periodStart.Before(prevPeriodEnd) {
 		return errors.Errorf("corrupted loaded cache for period [%v; %v]: periods are not sorted: prevPeriodEnd > currentPeriodStart: %v > %v",
-			periodStart, periodEnd, prevPeriodEnd, periodStart)
+			fmtT(periodStart), fmtT(periodEnd), fmtT(prevPeriodEnd), fmtT(periodStart))
 	}
 
 	if len(periodData) != 0 {
@@ -357,16 +377,16 @@ func (c *CacheBase[Data, Key]) verifyPeriodData(periodStart, periodEnd time.Time
 
 		if c.opts.GetTimestamp(firstElem).After(c.opts.GetTimestamp(lastElem)) {
 			return errors.Errorf("corrupted loaded cache for period [%v; %v]: data is not sorted: firstElemT > lastElemT: %v > %v",
-				periodStart, periodEnd, c.opts.GetTimestamp(firstElem), c.opts.GetTimestamp(lastElem))
+				fmtT(periodStart), fmtT(periodEnd), fmtT(c.opts.GetTimestamp(firstElem)), fmtT(c.opts.GetTimestamp(lastElem)))
 		}
 
 		if c.opts.GetTimestamp(firstElem).Before(periodStart) {
-			return errors.Errorf("corrupted loaded cache for period [%v; %v]: data is not sorted: firstElemT < periodStart: %v < %v",
-				periodStart, periodEnd, c.opts.GetTimestamp(firstElem), periodStart)
+			return errors.Errorf("corrupted loaded cache for period [%v; %v]: data is not sorted: firstElemT < periodStart: %v < %v%s",
+				fmtT(periodStart), fmtT(periodEnd), fmtT(c.opts.GetTimestamp(firstElem)), fmtT(periodStart), sourceContractHint)
 		}
 		if c.opts.GetTimestamp(lastElem).After(periodEnd) {
-			return errors.Errorf("corrupted loaded cache for period [%v; %v]: data is not sorted: lastElemT > periodEnd: %v > %v",
-				periodStart, periodEnd, c.opts.GetTimestamp(lastElem), periodEnd)
+			return errors.Errorf("corrupted loaded cache for period [%v; %v]: data is not sorted: lastElemT > periodEnd: %v > %v%s",
+				fmtT(periodStart), fmtT(periodEnd), fmtT(c.opts.GetTimestamp(lastElem)), fmtT(periodEnd), sourceContractHint)
 		}
 
 		var prevDataT time.Time
@@ -375,7 +395,7 @@ func (c *CacheBase[Data, Key]) verifyPeriodData(periodStart, periodEnd time.Time
 			dt := c.opts.GetTimestamp(d)
 
 			if !prevDataT.IsZero() && dt.Before(prevDataT) {
-				return errors.Errorf("corrupted loaded cache: data is not sorted: prevDataT > currentDataT: %v > %v, i = %v", prevDataT, dt, i)
+				return errors.Errorf("corrupted loaded cache: data is not sorted: prevDataT > currentDataT: %v > %v, i = %v", fmtT(prevDataT), fmtT(dt), i)
 			}
 
 			prevDataT = dt

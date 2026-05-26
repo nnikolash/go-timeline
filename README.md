@@ -190,6 +190,43 @@ If the nature of your historical data includes updates of last entry, you need t
 For example, image loading 1h candles first for date `[10:00; now]` at `12:15`. That would candles for `[10:00; 11:00), [11:00; 12:00)` and `[12:00:13:00)`. Then some time passes, and at `14:30` you want to load  candles for bigger period `[10:00; now]` (so `[10:00; 14:30]`). The library would ask your load funtion to load period `[12:15; now]`. But the candles are identifies by their `Open Time `, that would load only candles `[13:00; 14:00)` and `[14:00; 15:00)`. Candle `[12:00; 13:00)` is not included, because its `Open Time` is smaller than `12:15`. But because of this that edge candle `[12:00; 13:00)` won't received updated, which were done between `(12:15 and 13:00)`.
 To fix that, load funtion must load one candle more than requested. It will return it to the library and library will overwrite the obsolete version. But don't forget to also extend the period returned to the load funtion - it must at least include ALL returned entries.
 
+### Time zones
+
+The library compares timestamps by **absolute time** (`time.Time.Before` /
+`time.Time.After`), so periods passed to `Get` / `GetCached` may be in any
+`time.Location` — `09:30 UTC` and `11:30 +0200 CEST` are treated as the same
+instant.
+
+Internal storage of the SQLite cache normalizes timestamps to UTC before
+writing (and again when reading back). After a restart cached `PeriodStart`
+/ `PeriodEnd` therefore come back in UTC even if the original `Get` call
+used a non-UTC location. This does not affect comparisons but does mean
+error messages and the period bounds returned by `GetCachedPeriodClosestFromStart`
+/ `GetCachedPeriodClosestFromEnd` may be rendered in a different TZ than
+you passed in.
+
+### Source contract — periods returned by `GetFromSource`
+
+The load function (`GetFromSource`) **may return a period bigger than
+requested** (this is the supported way to do "overhead-fetch" — e.g. loading
+extra candles to the left for indicator warm-up). It **must** satisfy:
+
+```
+returnedPeriodStart  <= requestedPeriodStart
+returnedPeriodEnd    >= requestedPeriodEnd
+returnedPeriodStart  <= firstElem.Timestamp
+lastElem.Timestamp   <= returnedPeriodEnd
+firstElem.Timestamp  <= lastElem.Timestamp   (entries sorted ascending)
+```
+
+A common downstream bug is to fetch overhead candles for indicators but
+keep `PeriodStart` equal to the originally requested value, so the first
+returned element ends up earlier than the declared `PeriodStart`. The
+library detects this and reports it via `verifyPeriodData` as
+`data is not sorted: firstElemT < periodStart: ...`. The fix is on the
+source side — extend `PeriodStart` back so it matches the earliest entry
+you return (or stop returning the overhead).
+
 ### What if source does not provide convenient interface?
 
 Sometimes source of data may not provide interface for getting data for a **custom period** - sometimes only **pagination** is available.
