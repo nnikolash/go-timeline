@@ -23,6 +23,14 @@ type SqliteCacheOptions[Data any, Key any, ID comparable] struct {
 	GetFromSource        CacheSource[Data, Key]  // (Required) Fetch data from source
 	KeyToStr             func(Key) string        // (Optional) Convert key to string
 	SkipDataVerification bool
+
+	// CrossProcessLocking serializes the per-key check->fetch->store sequence
+	// across processes via a sidecar "<key>.lock" file, and reloads the on-disk
+	// index under that lock so a period stored by another process is reused
+	// instead of re-fetched. Enable it when multiple processes share CacheDir.
+	// WAL + busy_timeout (set unconditionally) make concurrent access safe;
+	// this additionally avoids redundant downloads and lost-segment overwrites.
+	CrossProcessLocking bool
 }
 
 func NewSqliteCache[Data any, Key any, ID comparable](opts SqliteCacheOptions[Data, Key, ID]) (*SqliteCache[Data, Key, ID], error) {
@@ -32,6 +40,14 @@ func NewSqliteCache[Data any, Key any, ID comparable](opts SqliteCacheOptions[Da
 
 	if err := os.MkdirAll(opts.CacheDir, 0755); err != nil && !os.IsExist(err) {
 		return nil, errors.Wrapf(err, "failed to create cache directory %v", opts.CacheDir)
+	}
+
+	var lockKey func(keyStr string) (func(), error)
+	var initLocker *fileKeyLocker
+	if opts.CrossProcessLocking {
+		locker := newFileKeyLocker(opts.CacheDir)
+		lockKey = locker.LockKey
+		initLocker = locker
 	}
 
 	return &SqliteCache[Data, Key, ID]{
@@ -45,8 +61,10 @@ func NewSqliteCache[Data any, Key any, ID comparable](opts SqliteCacheOptions[Da
 				getTimestamp: opts.GetTimestamp,
 				keyToStr:     opts.KeyToStr,
 				connections:  make(map[string]*gorm.DB),
+				initLocker:   initLocker,
 			},
 			SkipDataVerification: opts.SkipDataVerification,
+			LockKey:              lockKey,
 		}),
 	}, nil
 }
@@ -63,6 +81,11 @@ type sqliteCacheStorage[Data any, Key any, ID comparable] struct {
 	getTimestamp func(d *Data) time.Time
 	keyToStr     func(Key) string
 	connections  map[string]*gorm.DB
+	// initLocker, when set, serializes the db open+AutoMigrate across processes
+	// (CREATE TABLE and WAL-mode switching race otherwise). It uses a dedicated
+	// ".init" lock file, separate from the per-key fetch lock, so the two never
+	// interact. nil when CrossProcessLocking is disabled.
+	initLocker *fileKeyLocker
 }
 
 var _ CacheStorage[struct{}, int64] = &sqliteCacheStorage[struct{}, int64, string]{}
@@ -124,8 +147,28 @@ func (c *sqliteCacheStorage[Data, Key, ID]) getConn(key Key) (*gorm.DB, error) {
 
 	dbFilePath := c.cacheFilePath(key)
 
+	// WAL lets a lock-free reader run concurrently with a writer on the same
+	// file (e.g. another process holding the per-key lock), and busy_timeout
+	// turns transient "database is locked" contention into a short wait instead
+	// of an immediate error. Set per-connection via DSN so the whole pool gets
+	// them. Cross-process correctness of check->fetch->store is handled
+	// separately by CrossProcessLocking; these just make raw access safe.
+	dsn := dbFilePath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+
+	// Serialize open+migrate across processes: concurrent CREATE TABLE and
+	// WAL-mode switching on a fresh file otherwise collide ("table already
+	// exists", SQLITE_BUSY). This path runs before the per-key fetch lock, so it
+	// needs its own (distinct) lock. Held only for the one-time open per key.
+	if c.initLocker != nil {
+		unlock, err := c.initLocker.LockKey(".init")
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to acquire init lock for %v", dbFilePath)
+		}
+		defer unlock()
+	}
+
 	var err error
-	db, err = gorm.Open(sqlite.Open(dbFilePath), &gorm.Config{
+	db, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: &loggerWithFilename{
 			l:        logger.Default.LogMode(logger.Warn),
 			filename: dbFilePath,

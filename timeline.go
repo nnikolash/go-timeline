@@ -51,6 +51,14 @@ type CacheBaseOptions[Data any, Key any] struct {
 	GetFromSource        CacheSource[Data, Key]
 	Storage              CacheStorage[Data, Key]
 	SkipDataVerification bool
+
+	// LockKey, if set, makes the cache serialize the per-key
+	// check->fetch->store sequence across processes. On a cache miss the lock
+	// for the key is acquired (blocking), the in-memory index is reloaded from
+	// storage (so data another process stored while we waited is picked up
+	// instead of re-fetched), and only then is the source queried if the
+	// period is still missing. nil disables cross-process locking.
+	LockKey func(keyStr string) (unlock func(), err error)
 }
 
 // TODO: last element of each period may be incomplete.
@@ -318,6 +326,13 @@ func (c *CacheBase[Data, Key]) loadCache(key Key, series *sparseSeriesT[Data]) e
 		return errors.Wrapf(err, "failed to load cache for '%v'", c.opts.KeyToStr(key))
 	}
 
+	return c.restoreState(key, series, state)
+}
+
+// restoreState verifies and restores a freshly loaded storage state into the
+// in-memory series, replacing the current segment index. The caller is
+// responsible for holding series.Access if the series is already published.
+func (c *CacheBase[Data, Key]) restoreState(key Key, series *sparseSeriesT[Data], state *CacheState[Data]) error {
 	if state == nil {
 		return nil
 	}
@@ -336,6 +351,22 @@ func (c *CacheBase[Data, Key]) loadCache(key Key, series *sparseSeriesT[Data]) e
 	}
 
 	return nil
+}
+
+// reloadIndex re-reads the authoritative on-disk index for key and replaces the
+// in-memory segment index with it. Called under the cross-process lock so that
+// periods stored by another process while we waited become visible (preventing
+// a redundant re-fetch and a destructive segment overwrite on the next Save).
+func (c *CacheBase[Data, Key]) reloadIndex(key Key, series *sparseSeriesT[Data]) error {
+	state, err := c.opts.Storage.Load(key)
+	if err != nil {
+		return errors.Wrapf(err, "failed to reload cache index for '%v'", c.opts.KeyToStr(key))
+	}
+
+	series.Access.Lock()
+	defer series.Access.Unlock()
+
+	return c.restoreState(key, series, state)
 }
 
 // fmtT renders a timestamp with both its native form and its absolute (UTC)
@@ -445,6 +476,24 @@ func (c *CacheBase[Data, Key]) loadDataFromSourceIntoCache(key Key, series *spar
 
 	if data, err := c.getCachedData(series, periodStart, periodEnd); err == nil {
 		return data, nil
+	}
+
+	if c.opts.LockKey != nil {
+		// Serialize check->fetch->store for this key across processes, then
+		// re-read the on-disk index: another process may have stored this
+		// period while we were blocked on the lock.
+		unlock, err := c.opts.LockKey(c.opts.KeyToStr(key))
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to acquire cross-process lock for '%v'", c.opts.KeyToStr(key))
+		}
+		defer unlock()
+
+		if err := c.reloadIndex(key, series); err != nil {
+			return nil, err
+		}
+		if data, err := c.getCachedData(series, periodStart, periodEnd); err == nil {
+			return data, nil
+		}
 	}
 
 	var err error

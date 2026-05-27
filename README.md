@@ -227,6 +227,28 @@ library detects this and reports it via `verifyPeriodData` as
 source side — extend `PeriodStart` back so it matches the earliest entry
 you return (or stop returning the overhead).
 
+### Concurrency and multi-process access
+
+Within a single process the caches are thread-safe: concurrent `Get` calls for
+the same key are serialized on the fetch path and reads run in parallel.
+
+Multiple **processes** sharing the same `CacheDir` is a different problem. The
+SQLite cache opens each per-key database with `journal_mode=WAL` and a
+`busy_timeout` unconditionally, so concurrent raw reads/writes don't fail with
+`database is locked`. But the high-level `check → fetch → store` sequence is a
+read-modify-write that WAL alone can't make atomic across processes: each
+process keeps the segment index in memory and never re-reads it, so two
+processes can both decide "missing", both download, and the second `Save`
+(a full segment-index rewrite) can drop the first's segments.
+
+Enable `CrossProcessLocking` on `SqliteCacheOptions` /
+`MemoryAndSqliteCacheOptions` to close this. On a cache miss the cache takes a
+per-key advisory file lock (`<key>.lock` in `CacheDir`, via `flock`), **reloads
+the on-disk index under the lock**, and re-checks — so a period another process
+just stored is reused instead of re-fetched, and the rewrite is built on the
+fresh index. Different keys never block each other, and the OS releases the
+lock automatically if a process dies. Leave it off for single-process use.
+
 ### What if source does not provide convenient interface?
 
 Sometimes source of data may not provide interface for getting data for a **custom period** - sometimes only **pagination** is available.
