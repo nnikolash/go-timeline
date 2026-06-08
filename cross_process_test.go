@@ -2,6 +2,7 @@ package timeline_test
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -71,6 +72,47 @@ func TestCache_Sqlite_WALEnabled(t *testing.T) {
 	var mode string
 	require.NoError(t, db.Raw("PRAGMA journal_mode").Scan(&mode).Error)
 	require.Equal(t, "wal", strings.ToLower(mode))
+}
+
+// TestCache_CrossProcessLock_LockFileNameMatchesDataFile asserts that the
+// per-key cross-process lock file is named after the db file it protects:
+// "<db file name>.lock" (sqlite_timeline_cache_<key>.db.lock), so lock and data
+// share a prefix and sit next to each other in a directory listing. Before the
+// fix the lock was the bare "<key>.lock", which looked unrelated to its db file.
+func TestCache_CrossProcessLock_LockFileNameMatchesDataFile(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := t.TempDir()
+	key := TimelineDataKey{"key", 1}
+
+	t0 := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
+	data := []TimelineData{{Timestamp: t0, Value: "1", ID: 1}}
+
+	var sourceCalls atomic.Int32
+	cache := newLockingSqliteCache(t, cacheDir, data, &sourceCalls)
+	_, err := cache.Get(key, t0, t0, nil)
+	require.NoError(t, err)
+	cache.Close()
+
+	dbs, err := filepath.Glob(filepath.Join(cacheDir, "sqlite_timeline_cache_*.db"))
+	require.NoError(t, err)
+	require.Len(t, dbs, 1, "expected exactly one per-key db file")
+	dbName := filepath.Base(dbs[0])
+
+	// The per-key lock must be exactly "<db file name>.lock".
+	wantLock := dbName + ".lock"
+	_, err = os.Stat(filepath.Join(cacheDir, wantLock))
+	require.NoError(t, err, "expected lock file %q next to db file %q", wantLock, dbName)
+
+	// No bare "<key>.lock" (db prefix missing) must exist anymore: every per-key
+	// lock must start with the same prefix as the db files it guards.
+	locks, err := filepath.Glob(filepath.Join(cacheDir, "*.lock"))
+	require.NoError(t, err)
+	for _, lp := range locks {
+		base := filepath.Base(lp)
+		require.True(t, strings.HasPrefix(base, "sqlite_timeline_cache"),
+			"lock file %q does not share the cache prefix of its data files", base)
+	}
 }
 
 // TestCache_CrossProcessLock_ReloadsIndexInsteadOfRefetching is the core test:

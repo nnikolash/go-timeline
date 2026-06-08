@@ -12,9 +12,11 @@ import (
 //
 // It is used to serialize the cache's check->fetch->store sequence for a single
 // key ACROSS PROCESSES (within a process the cache already serializes via its
-// in-memory Fetch mutex). Each key gets a dedicated sidecar "<key>.lock" file in
-// the cache directory — never the backing .db, to avoid fighting sqlite's own
-// locking. Different keys use different lock files and never block each other.
+// in-memory Fetch mutex). Each lock is a dedicated sidecar "<lockKey>.lock" file
+// in the cache directory — never the backing .db, to avoid fighting sqlite's own
+// locking. Callers choose lockKey so the lock name matches the data file it
+// guards (the sqlite cache passes "<db file name>", giving "<db file>.lock").
+// Different keys use different lock files and never block each other.
 //
 // A fresh *flock.Flock (and thus a fresh file descriptor) is opened per
 // acquisition. On Linux a flock placed via one open file description blocks one

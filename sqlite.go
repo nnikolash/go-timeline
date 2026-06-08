@@ -25,7 +25,7 @@ type SqliteCacheOptions[Data any, Key any, ID comparable] struct {
 	SkipDataVerification bool
 
 	// CrossProcessLocking serializes the per-key check->fetch->store sequence
-	// across processes via a sidecar "<key>.lock" file, and reloads the on-disk
+	// across processes via a sidecar "<db file name>.lock" file, and reloads the on-disk
 	// index under that lock so a period stored by another process is reused
 	// instead of re-fetched. Enable it when multiple processes share CacheDir.
 	// WAL + busy_timeout (set unconditionally) make concurrent access safe;
@@ -46,7 +46,15 @@ func NewSqliteCache[Data any, Key any, ID comparable](opts SqliteCacheOptions[Da
 	var initLocker *fileKeyLocker
 	if opts.CrossProcessLocking {
 		locker := newFileKeyLocker(opts.CacheDir)
-		lockKey = locker.LockKey
+		// Name the per-key lock after the db file it protects, i.e.
+		// "<db file name>.lock" (sqlite_timeline_cache_<keyStr>.db.lock), so the
+		// lock and its data file sit next to each other in a directory listing.
+		// The bare keyStr the cache hands us lacks the db prefix; add it here in
+		// the sqlite layer (which owns the db naming) and keep fileKeyLocker
+		// generic over an opaque key.
+		lockKey = func(keyStr string) (func(), error) {
+			return locker.LockKey(sqliteDBFileName(keyStr))
+		}
 		initLocker = locker
 	}
 
@@ -133,8 +141,20 @@ func (c *sqliteCacheStorage[Data, Key, ID]) Add(key Key, periodStart, periodEnd 
 	return newSqliteCacheData[Data](key, c), nil
 }
 
+// sqliteCacheFilePrefix prefixes every per-key sqlite cache db file. The
+// per-key cross-process lock file is named "<dbFileName(keyStr)>.lock" so the
+// lock and the data file it protects share a name in a directory listing.
+const sqliteCacheFilePrefix = "sqlite_timeline_cache_"
+
+// sqliteDBFileName returns the bare db file name (no directory) for a key
+// string. Used both for the db file itself and to derive the matching lock
+// file name, so the two can never drift apart.
+func sqliteDBFileName(keyStr string) string {
+	return sqliteCacheFilePrefix + keyStr + ".db"
+}
+
 func (c *sqliteCacheStorage[Data, Key, ID]) cacheFilePath(key Key) string {
-	return path.Join(c.cacheDir, fmt.Sprintf("sqlite_timeline_cache_%v.db", key))
+	return path.Join(c.cacheDir, sqliteDBFileName(c.keyToStr(key)))
 }
 
 func (c *sqliteCacheStorage[Data, Key, ID]) getConn(key Key) (*gorm.DB, error) {
@@ -159,8 +179,10 @@ func (c *sqliteCacheStorage[Data, Key, ID]) getConn(key Key) (*gorm.DB, error) {
 	// WAL-mode switching on a fresh file otherwise collide ("table already
 	// exists", SQLITE_BUSY). This path runs before the per-key fetch lock, so it
 	// needs its own (distinct) lock. Held only for the one-time open per key.
+	// It is a single global lock (not per-db), named with the cache prefix so it
+	// is recognizable as belonging to this lib rather than a stray ".init".
 	if c.initLocker != nil {
-		unlock, err := c.initLocker.LockKey(".init")
+		unlock, err := c.initLocker.LockKey(sqliteCacheFilePrefix + "init")
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to acquire init lock for %v", dbFilePath)
 		}
