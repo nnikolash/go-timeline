@@ -591,6 +591,13 @@ func (c *CacheBase[Data, Key]) fetchDataFromSource(key Key, periodStart, periodE
 }
 
 func (c *CacheBase[Data, Key]) Close() {
+	// The CacheStorage interface does not require Close (in-memory backends have
+	// nothing to release), so propagate opt-in via type assertion. Without this
+	// sqliteCacheStorage.Close (PRAGMA optimize + sqlDB.Close per connection) was
+	// never reached, leaking DB handles/WAL for the process lifetime.
+	if closer, ok := c.opts.Storage.(interface{ Close() }); ok {
+		closer.Close()
+	}
 }
 
 type sparseSeriesT[Data any] struct {
